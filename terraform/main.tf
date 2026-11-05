@@ -1,11 +1,3 @@
-data "azurerm_client_config" "current" {}
-
-resource "random_string" "suffix" {
-  length  = 5
-  upper   = false
-  special = false
-}
-
 locals {
   project_slug = lower(replace(var.project_name, "-", ""))
   name_prefix  = "${substr(local.project_slug, 0, 18)}-${random_string.suffix.result}"
@@ -14,6 +6,12 @@ locals {
     managed_by  = "terraform"
     environment = "workshop"
   }
+}
+
+resource "random_string" "suffix" {
+  length  = 5
+  upper   = false
+  special = false
 }
 
 resource "azurerm_resource_group" "main" {
@@ -29,6 +27,13 @@ resource "azurerm_container_registry" "main" {
   sku                 = "Basic"
   admin_enabled       = false
   tags                = local.tags
+}
+
+resource "azurerm_role_assignment" "github_acr_push" {
+  scope                = azurerm_container_registry.main.id
+  role_definition_name = "AcrPush"
+  principal_id         = var.azure_deployer_object_id
+  principal_type       = "ServicePrincipal"
 }
 
 resource "azurerm_log_analytics_workspace" "main" {
@@ -103,13 +108,10 @@ resource "azurerm_container_app" "main" {
       }
     }
   }
-}
 
-resource "azurerm_role_assignment" "github_acr_push" {
-  scope                = azurerm_container_registry.main.id
-  role_definition_name = "AcrPush"
-  principal_id         = var.azure_deployer_object_id
-  principal_type       = "ServicePrincipal"
+  depends_on = [
+    azurerm_role_assignment.github_acr_push
+  ]
 }
 
 resource "azurerm_role_assignment" "container_app_acr_pull" {

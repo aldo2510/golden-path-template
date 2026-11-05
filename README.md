@@ -1,81 +1,85 @@
-# Golden Path: GitHub Actions + Terraform + Azure
+# Golden Path Template — GitHub Actions + Terraform + Azure
 
-Plantilla educativa para desplegar una aplicación Flask en Azure Container Apps usando GitHub Actions y Terraform.
+This repository is the **application template**. Use GitHub's **Use this template** to create a new application repository. Each new app repository gets its own source code and invokes shared workflows and Terraform modules from separate platform repositories.
 
-## Qué crea
+## Architecture
 
-- Resource Group
-- Azure Container Registry (ACR)
-- Log Analytics Workspace
-- Container Apps Environment
-- Azure Container App
-- Identidad administrada para que Container App descargue imágenes desde ACR
+1. `golden-path-template` — application scaffold (Flask, Dockerfile, thin Terraform root module, workflow caller).
+2. `platform-workflows` — reusable GitHub Actions workflows for deploy and destroy.
+3. `platform-terraform-modules` — reusable Azure infrastructure module.
+4. Azure — Resource Group, ACR, Log Analytics, Container Apps Environment, Container App.
 
-El pipeline crea primero la infraestructura base, construye y publica la imagen en ACR, y luego actualiza la Container App con la imagen recién creada.
+A push to `main` in an app repo calls the shared deploy workflow. It initializes remote Terraform state, creates the infrastructure, builds `app/` using ACR Tasks, and updates the Container App to use the new image.
 
-## Requisitos
+## Before running the workflow
 
-1. Una suscripción de Azure con permisos para crear recursos y asignaciones RBAC.
-2. Un Service Principal de Azure (client ID, client secret, tenant ID y subscription ID).
-3. GitHub Actions habilitado en el repositorio.
+### 1. Create remote Terraform state storage once
 
-## 1. Configura GitHub Actions
+The workflow expects an existing Azure Storage account and blob container for Terraform state. Example commands (change the globally unique storage account name):
 
-En **Settings → Secrets and variables → Actions**, crea estos **secrets**:
-
-- `AZURE_CLIENT_ID`: Application (client) ID del Service Principal.
-- `AZURE_CLIENT_SECRET`: secreto del Service Principal.
-- `AZURE_TENANT_ID`: Tenant ID.
-- `AZURE_SUBSCRIPTION_ID`: Subscription ID.
-
-Crea estas **variables** (no son secretos):
-
-- `TF_PROJECT_NAME`: nombre corto del proyecto, solo letras, números y guiones; debe comenzar por letra, por ejemplo `goldenpathdemo`.
-- `AZURE_PRINCIPAL_OBJECT_ID`: Object ID del **service principal enterprise application** (no el Application/Client ID). Se usa para conceder permisos de escritura en ACR.
-
-El principal necesita permisos suficientes para desplegar los recursos del ejemplo y crear asignaciones de roles. En un entorno real, aplica mínimo privilegio y no otorgues Owner por comodidad.
-
-## 2. Preparar la autenticación
-
-Este taller usa `azure/login@v2` con Service Principal + Client Secret, no OIDC. No agregues credenciales al repositorio ni a archivos `.tfvars`. Rota y elimina el secreto al terminar el taller. Para producción, prefiere federación de identidad (OIDC) cuando sea posible.
-
-## 3. Desplegar
-
-Haz push a `main` (o ejecuta manualmente el workflow **Deploy Golden Path** desde Actions). El pipeline:
-
-1. Inicia sesión en Azure.
-2. Ejecuta `terraform apply` para aprovisionar la base.
-3. Construye la imagen en ACR mediante `az acr build`.
-4. Ejecuta Terraform de nuevo para configurar la imagen de la aplicación.
-5. Imprime la URL pública de la aplicación.
-
-El primer aprovisionamiento puede tardar varios minutos; no todo el flujo terminará en segundos.
-
-## 4. Destruir los recursos
-
-Ejecuta manualmente **Destroy Golden Path** desde Actions. El workflow pide confirmar el nombre del proyecto antes de ejecutar `terraform destroy`. La destrucción elimina los recursos creados por el taller; verifica antes de usarlo con recursos reales.
-
-## Estructura
-
-```text
-.
-├── app/
-│   ├── app.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── terraform/
-│   ├── versions.tf
-│   ├── variables.tf
-│   ├── main.tf
-│   ├── outputs.tf
-│   └── terraform.tfvars.example
-└── .github/workflows/
-    ├── deploy.yml
-    └── destroy.yml
+```bash
+az login
+az account set --subscription "<AZURE_SUBSCRIPTION_ID>"
+az group create --name rg-goldenpath-tfstate --location eastus
+az storage account create \
+  --name stgoldenpathstate123 \
+  --resource-group rg-goldenpath-tfstate \
+  --location eastus \
+  --sku Standard_LRS \
+  --kind StorageV2 \
+  --allow-blob-public-access false
+az storage container create \
+  --name tfstate \
+  --account-name stgoldenpathstate123 \
+  --auth-mode login
 ```
 
-## Notas del taller
+Give the GitHub Actions Service Principal **Storage Blob Data Contributor** on the storage account (or the state container). This backend is shared across app repositories; the workflow uses a different state key per `TF_PROJECT_NAME`.
 
-- Terraform state se guarda en el workspace del runner, por lo que esta versión es apropiada para una demostración de una sola ejecución controlada, no para trabajo en equipo ni para ejecuciones concurrentes. Para un entorno compartido, configura un backend remoto de Azure Storage con acceso y bloqueo adecuados.
-- El ejemplo utiliza `az acr build`, así que no necesita Docker instalado en el runner.
-- Revisa los costos y elimina los recursos al finalizar.
+### 2. Add repository secrets
+
+In **Settings → Secrets and variables → Actions → Secrets**, configure:
+
+- `AZURE_CLIENT_ID`: Application (client) ID of the Azure Service Principal.
+- `AZURE_CLIENT_SECRET`: its client secret.
+- `AZURE_TENANT_ID`: Directory (tenant) ID.
+- `AZURE_SUBSCRIPTION_ID`: subscription ID.
+
+Authentication for this workshop is **Service Principal + Client Secret, not OIDC**. Never commit the secret or put it in a Terraform file.
+
+### 3. Add repository variables
+
+In **Settings → Secrets and variables → Actions → Variables**, configure:
+
+- `TF_PROJECT_NAME`: unique short identifier, e.g. `clientesapi` (3–20 letters/digits/hyphens, begins with a letter).
+- `AZURE_PRINCIPAL_OBJECT_ID`: Object ID of the Service Principal's Enterprise Application, not its Client ID.
+- `AZURE_LOCATION`: optional Azure region, e.g. `eastus`.
+- `TF_STATE_RESOURCE_GROUP`: e.g. `rg-goldenpath-tfstate`.
+- `TF_STATE_STORAGE_ACCOUNT`: the actual storage account name.
+- `TF_STATE_CONTAINER`: e.g. `tfstate`.
+
+The Service Principal needs permission to create the required Azure resources and assign the ACR roles. For this workshop, arrange suitable resource-creation and role-assignment permissions before running. Scope permissions narrowly; do not automatically grant Owner in production.
+
+## Run it
+
+1. Use **Use this template** to create a new repository for your application.
+2. Configure the four secrets and six variables above in the new repository.
+3. Push a change to `main`, or manually run **Deploy Golden Path** from Actions.
+4. Open the job summary to get the public application URL.
+5. When finished, run **Destroy Golden Path** and type the exact project name to confirm.
+
+The first deployment can take several minutes because Azure resources and a container image need to be provisioned. Azure resources and Log Analytics ingestion may incur charges. Destroy the app infrastructure after the workshop; the separately created Terraform state storage remains.
+
+## Layout
+
+```text
+app/                              # App source and Dockerfile
+terraform/                        # Thin root module, references shared module
+.github/workflows/deploy.yml      # Calls platform-workflows
+.github/workflows/destroy.yml     # Calls platform-workflows
+```
+
+## Notes
+
+- Shared workflow and module references currently point to `main` to keep the classroom setup easy to follow. For a governed platform, pin both references to reviewed release tags or commit SHAs.
+- This is a teaching starter, not a production platform baseline. Add tests, policy checks, release versioning, cost controls, observability, and environment approvals before broader use.

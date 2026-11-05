@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   deploy:
+    if: ${{ vars.TF_PROJECT_NAME != '' }}
     uses: aldo2510/platform-workflows/.github/workflows/deploy-azure-container-apps.yml@main
     with:
       project_name: ${{ vars.TF_PROJECT_NAME }}

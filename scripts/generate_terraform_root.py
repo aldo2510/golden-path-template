@@ -58,6 +58,9 @@ tfdir = out / "terraform"
 variables = []
 module_args = []
 tfvars = {}
+if "subscription_id" not in schema:
+    variables.append('variable "subscription_id" {\n  type = string\n  sensitive = true\n}\n')
+
 for name, spec in schema.items():
     typ = hcl_type(spec)
     variables.append(f'variable "{name}" {{\n  type = {typ}')

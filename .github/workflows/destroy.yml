@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   validate_confirmation:
+    if: ${{ vars.TF_PROJECT_NAME != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate project name confirmation
@@ -27,6 +28,7 @@ jobs:
           fi
 
   destroy:
+    if: ${{ vars.TF_PROJECT_NAME != '' }}
     needs: validate_confirmation
     uses: aldo2510/platform-workflows/.github/workflows/destroy-azure-container-apps.yml@main
     with:

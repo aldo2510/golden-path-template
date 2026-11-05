@@ -1,0 +1,131 @@
+name: Request Azure Storage Account
+
+on:
+  workflow_dispatch:
+    inputs:
+      storage_account_name:
+        description: "Globally unique name: 3-24 lowercase letters/numbers"
+        required: true
+        type: string
+      resource_group_name:
+        description: "Resource group to create"
+        required: true
+        type: string
+      location:
+        description: "Azure region"
+        required: true
+        type: choice
+        options: [eastus, centralus]
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+      replication_type:
+        description: "Storage redundancy"
+        required: true
+        type: choice
+        options: [LRS, ZRS, GRS]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-${{ inputs.storage_account_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Validate and plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/azure-storage-account/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate request
+        shell: bash
+        env:
+          STORAGE_NAME: ${{ inputs.storage_account_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group_name }}
+          LOCATION: ${{ inputs.location }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REPLICATION: ${{ inputs.replication_type }}
+        run: |
+          [[ "$STORAGE_NAME" =~ ^[a-z0-9]{3,24}$ ]] || { echo "Invalid Storage Account name"; exit 1; }
+          [[ "$RESOURCE_GROUP" =~ ^[A-Za-z0-9._()-]{1,90}$ ]] || { echo "Invalid resource group name"; exit 1; }
+          [[ "$LOCATION" == "eastus" || "$LOCATION" == "centralus" ]] || { echo "Invalid location"; exit 1; }
+          [[ "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "staging" || "$ENVIRONMENT" == "prod" ]] || { echo "Invalid environment"; exit 1; }
+          [[ "$REPLICATION" == "LRS" || "$REPLICATION" == "ZRS" || "$REPLICATION" == "GRS" ]] || { echo "Invalid replication"; exit 1; }
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+      - name: Terraform init
+        run: |
+          terraform fmt -check -recursive
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=storage/${{ inputs.environment }}/${{ inputs.storage_account_name }}.tfstate" \
+            -backend-config="use_azuread_auth=true"
+      - name: Terraform validate
+        run: terraform validate
+      - name: Terraform plan
+        env:
+          TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_resource_group_name: ${{ inputs.resource_group_name }}
+          TF_VAR_storage_account_name: ${{ inputs.storage_account_name }}
+          TF_VAR_location: ${{ inputs.location }}
+          TF_VAR_environment: ${{ inputs.environment }}
+          TF_VAR_replication_type: ${{ inputs.replication_type }}
+        run: terraform plan -input=false -out=tfplan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.storage_account_name }}
+          path: examples/azure-storage-account/terraform/tfplan
+          retention-days: 1
+
+  apply:
+    name: Apply after approval
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: examples/azure-storage-account/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=storage/${{ inputs.environment }}/${{ inputs.storage_account_name }}.tfstate" \
+            -backend-config="use_azuread_auth=true"
+      - uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.storage_account_name }}
+          path: examples/azure-storage-account/terraform
+      - name: Terraform apply
+        run: terraform apply -input=false tfplan
+      - name: Summary
+        run: |
+          echo "## Azure Storage Account provisioned" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Name: ${{ inputs.storage_account_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Resource group: ${{ inputs.resource_group_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Region: ${{ inputs.location }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Environment: ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Replication: ${{ inputs.replication_type }}" >> "$GITHUB_STEP_SUMMARY"

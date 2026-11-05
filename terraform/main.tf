@@ -109,9 +109,6 @@ resource "azurerm_container_app" "main" {
     }
   }
 
-  depends_on = [
-    azurerm_role_assignment.github_acr_push
-  ]
 }
 
 resource "azurerm_role_assignment" "container_app_acr_pull" {

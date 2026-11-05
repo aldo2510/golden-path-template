@@ -1,0 +1,88 @@
+name: Generate Infrastructure Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      module_id:
+        description: Approved module ID from platform-terraform-modules/catalog.yaml
+        required: true
+        type: choice
+        options:
+          - azure-storage-account
+          - azure-container-apps
+      repository_name:
+        description: New repository name, for example infra-payments-dev
+        required: true
+        type: string
+      module_inputs_json:
+        description: JSON object containing approved module input values
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate repository name and inputs
+        id: validate
+        env:
+          REPOSITORY_NAME: ${{ inputs.repository_name }}
+          MODULE_ID: ${{ inputs.module_id }}
+          MODULE_INPUTS_JSON: ${{ inputs.module_inputs_json }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{2,90}$ ]] || { echo "Invalid repository name"; exit 1; }
+          [[ "$MODULE_ID" == "azure-storage-account" || "$MODULE_ID" == "azure-container-apps" ]] || { echo "Module is not allowlisted"; exit 1; }
+          python -c 'import json,os; d=json.loads(os.environ["MODULE_INPUTS_JSON"]); assert isinstance(d,dict), "module_inputs_json must be a JSON object"'
+      - name: Checkout platform templates
+        uses: actions/checkout@v4
+      - name: Install generation dependencies
+        run: python -m pip install --disable-pip-version-check pyyaml
+      - name: Generate Terraform root configuration
+        env:
+          MODULE_ID: ${{ inputs.module_id }}
+          MODULE_INPUTS_JSON: ${{ inputs.module_inputs_json }}
+        run: |
+          python scripts/generate_terraform_root.py
+      - name: Create infrastructure repository
+        env:
+          GH_TOKEN: ${{ secrets.GH_REPO_CREATION_TOKEN }}
+          GH_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ inputs.repository_name }}
+          MODULE_ID: ${{ inputs.module_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "Missing GH_REPO_CREATION_TOKEN secret. Configure a fine-grained PAT or GitHub App token with repository creation and contents write permissions."
+            exit 1
+          fi
+          gh auth setup-git
+          if gh api "repos/$GH_OWNER/$REPOSITORY_NAME" >/dev/null 2>&1; then
+            echo "Repository $GH_OWNER/$REPOSITORY_NAME already exists; refusing to overwrite it."
+            exit 1
+          fi
+          gh api --method POST "user/repos" -f name="$REPOSITORY_NAME" -f description="Terraform infrastructure generated from approved module $MODULE_ID" -F private=true -F auto_init=true
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git clone "https://x-access-token:$GH_TOKEN@github.com/$GH_OWNER/$REPOSITORY_NAME.git" generated-repo
+          cp -R generated-infra/. generated-repo/
+          cd generated-repo
+          git add .
+          git commit -m "Generate Terraform root from approved module $MODULE_ID"
+          git push origin HEAD:main
+      - name: Summary
+        env:
+          GH_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ inputs.repository_name }}
+          MODULE_ID: ${{ inputs.module_id }}
+        run: |
+          {
+            echo "## Infrastructure repository created"
+            echo "- Repository: https://github.com/$GH_OWNER/$REPOSITORY_NAME"
+            echo "- Approved module: $MODULE_ID"
+            echo "- Contents: Terraform root configuration and README"
+            echo "- Note: repository creation does not apply infrastructure."
+          } >> "$GITHUB_STEP_SUMMARY"
